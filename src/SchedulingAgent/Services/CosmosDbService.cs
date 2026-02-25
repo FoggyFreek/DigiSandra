@@ -171,4 +171,29 @@ public sealed class CosmosDbService : ICosmosDbService
             new PartitionKey(auditLog.RequestId),
             cancellationToken: ct);
     }
+
+    public async Task SaveRequestSummaryAsync(RequestSummaryDocument summary, CancellationToken ct = default)
+    {
+        _logger.LogDebug("Saving request summary for {RequestId}", summary.RequestId);
+
+        var response = await _container.CreateItemAsync(
+            summary,
+            new PartitionKey(summary.RequestId),
+            cancellationToken: ct);
+
+        _logger.LogInformation("Request summary saved, RU charge: {RuCharge}", response.RequestCharge);
+    }
+
+    public async Task SaveFeedbackAsync(FeedbackDocument feedback, CancellationToken ct = default)
+    {
+        _logger.LogInformation("Saving feedback for request {RequestId}, score: {Score}",
+            feedback.RequestId, feedback.Score);
+
+        var response = await _container.CreateItemAsync(
+            feedback,
+            new PartitionKey(feedback.RequestId),
+            cancellationToken: ct);
+
+        _logger.LogInformation("Feedback saved, RU charge: {RuCharge}", response.RequestCharge);
+    }
 }

@@ -148,6 +148,7 @@ public sealed class OneOnOneMeetingTests
             freeSlot.End,
             It.Is<List<ResolvedParticipant>>(p => p.Count == 2),
             true,
+            It.IsAny<RecurrenceInfo?>(),
             It.IsAny<CancellationToken>()), Times.Once);
 
         // Verify: Audit trail includes booking

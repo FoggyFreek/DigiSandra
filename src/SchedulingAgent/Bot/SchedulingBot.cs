@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using AdaptiveCards;
 using Microsoft.Bot.Builder;
 using Microsoft.Bot.Schema;
@@ -55,6 +56,12 @@ public sealed class SchedulingBot(
                 return;
             }
 
+            if (request.Status == SchedulingStatus.AwaitingDisambiguation)
+            {
+                await SendAdaptiveCardAsync(turnContext, DisambiguationCard.Build(request), ct);
+                return;
+            }
+
             if (request.ProposedSlots.Count == 0)
             {
                 var noSlotsCard = MeetingOptionsCard.BuildError(
@@ -102,8 +109,19 @@ public sealed class SchedulingBot(
                     MessageFactory.Text("Vergaderverzoek geannuleerd."), ct);
                 break;
 
+            case "disambiguate":
+                await HandleDisambiguationResponseActionAsync(turnContext, action, ct);
+                break;
+
             case "conflictResponse":
                 await HandleConflictResponseActionAsync(turnContext, action, ct);
+                break;
+
+            case "submitFeedback":
+                await HandleFeedbackActionAsync(turnContext, action, ct);
+                break;
+
+            case "skipFeedback":
                 break;
 
             default:
@@ -125,6 +143,9 @@ public sealed class SchedulingBot(
             var selectedSlot = request.ProposedSlots[action.SlotIndex];
             var confirmationCard = MeetingOptionsCard.BuildConfirmation(request, selectedSlot);
             await SendAdaptiveCardAsync(turnContext, confirmationCard, ct);
+
+            var feedbackCard = FeedbackCard.Build(request);
+            await SendAdaptiveCardAsync(turnContext, feedbackCard, ct);
         }
         catch (Exception ex)
         {
@@ -132,6 +153,82 @@ public sealed class SchedulingBot(
             var errorCard = MeetingOptionsCard.BuildError(
                 "Kon de vergadering niet boeken. Probeer het opnieuw.");
             await SendAdaptiveCardAsync(turnContext, errorCard, ct);
+        }
+    }
+
+    private async Task HandleDisambiguationResponseActionAsync(
+        ITurnContext<IMessageActivity> turnContext, CardAction action, CancellationToken ct)
+    {
+        try
+        {
+            var valueJson = JsonSerializer.Serialize(turnContext.Activity.Value);
+            var rawValues = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(valueJson) ?? [];
+
+            var knownFields = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+                { "action", "requestId", "slotIndex", "response", "conflictUserId" };
+
+            var selections = rawValues
+                .Where(kv => !knownFields.Contains(kv.Key))
+                .ToDictionary(kv => kv.Key, kv => kv.Value.GetString() ?? string.Empty);
+
+            await turnContext.SendActivityAsync(new Activity { Type = ActivityTypes.Typing }, ct);
+
+            var request = await orchestrator.HandleDisambiguationResponseAsync(action.RequestId, selections, ct);
+
+            if (request.Status == SchedulingStatus.PendingUserSelection && request.ProposedSlots.Count > 0)
+            {
+                await SendAdaptiveCardAsync(turnContext, MeetingOptionsCard.Build(request), ct);
+            }
+            else
+            {
+                var errorCard = MeetingOptionsCard.BuildError(
+                    "Kon geen vergadering plannen na verduidelijking. Probeer het opnieuw.");
+                await SendAdaptiveCardAsync(turnContext, errorCard, ct);
+            }
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "Error handling disambiguation for request {RequestId}", action.RequestId);
+            var errorCard = MeetingOptionsCard.BuildError(
+                "Er is een fout opgetreden bij het verwerken van je keuze.");
+            await SendAdaptiveCardAsync(turnContext, errorCard, ct);
+        }
+    }
+
+    private async Task HandleFeedbackActionAsync(
+        ITurnContext<IMessageActivity> turnContext, CardAction action, CancellationToken ct)
+    {
+        try
+        {
+            var valueJson = JsonSerializer.Serialize(turnContext.Activity.Value);
+            var rawValues = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(valueJson) ?? [];
+
+            var scoreRaw = rawValues.TryGetValue("score", out var scoreEl)
+                ? scoreEl.GetString()
+                : null;
+
+            if (!int.TryParse(scoreRaw, out var score) || score < 1 || score > 5)
+            {
+                await turnContext.SendActivityAsync(
+                    MessageFactory.Text("Geef een beoordeling van 1 tot 5 om te verzenden."), ct);
+                return;
+            }
+
+            var suggestion = rawValues.TryGetValue("improvementSuggestion", out var sugEl)
+                ? sugEl.GetString()
+                : null;
+            if (string.IsNullOrWhiteSpace(suggestion)) suggestion = null;
+
+            var userId = turnContext.Activity.From.AadObjectId ?? turnContext.Activity.From.Id;
+
+            await orchestrator.HandleFeedbackAsync(action.RequestId, userId, score, suggestion, ct);
+
+            await turnContext.SendActivityAsync(
+                MessageFactory.Text("Bedankt voor je feedback! We gebruiken dit om de assistent te verbeteren."), ct);
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "Error handling feedback for request {RequestId}", action.RequestId);
         }
     }
 

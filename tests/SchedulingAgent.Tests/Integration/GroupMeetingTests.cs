@@ -135,6 +135,7 @@ public sealed class GroupMeetingTests
             freeSlot.End,
             It.Is<List<ResolvedParticipant>>(p => p.Count == 5),
             true,
+            It.IsAny<RecurrenceInfo?>(),
             It.IsAny<CancellationToken>()), Times.Once);
 
         // Verify: Full audit trail

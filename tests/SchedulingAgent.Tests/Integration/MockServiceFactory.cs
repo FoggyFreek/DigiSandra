@@ -28,6 +28,8 @@ public sealed class MockServiceFactory
     public List<ConflictResolutionStateDocument> ConflictStatesCreated { get; } = [];
     public List<ConflictResolutionStateDocument> ConflictStatesUpdated { get; } = [];
     public List<AuditLogDocument> AuditLogs { get; } = [];
+    public List<RequestSummaryDocument> RequestSummaries { get; } = [];
+    public List<FeedbackDocument> Feedbacks { get; } = [];
     public List<string> IntentExtractions { get; } = [];
     public List<(SlotConflict Conflict, MeetingPriority Priority)> ConflictAnalyses { get; } = [];
 
@@ -96,7 +98,11 @@ public sealed class MockServiceFactory
             .ReturnsAsync((string name, CancellationToken _) =>
             {
                 ResolvedUsers.Add(name);
-                return userMap.GetValueOrDefault(name);
+                return new ParticipantResolutionResult
+                {
+                    RequestedName = name,
+                    Resolved = userMap.GetValueOrDefault(name)
+                };
             });
     }
 
@@ -117,6 +123,20 @@ public sealed class MockServiceFactory
             {
                 ResolvedGroups.Add(name);
                 return groupMap.GetValueOrDefault(name) ?? [];
+            });
+    }
+
+    /// <summary>
+    /// Overrides the default resolution for a specific name with an ambiguous multi-candidate result.
+    /// Uses <see cref="It.Is{T}"/> so it takes precedence over the <see cref="It.IsAny{T}"/> default.
+    /// </summary>
+    public void SetupAmbiguousUser(string name, List<ResolvedParticipant> candidates)
+    {
+        Graph.Setup(g => g.ResolveUserAsync(It.Is<string>(n => n == name), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ParticipantResolutionResult
+            {
+                RequestedName = name,
+                Candidates = candidates
             });
     }
 
@@ -164,9 +184,9 @@ public sealed class MockServiceFactory
                 It.IsAny<string>(), It.IsAny<string>(),
                 It.IsAny<DateTimeOffset>(), It.IsAny<DateTimeOffset>(),
                 It.IsAny<List<ResolvedParticipant>>(), It.IsAny<bool>(),
-                It.IsAny<CancellationToken>()))
+                It.IsAny<RecurrenceInfo?>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync((string organizer, string subject, DateTimeOffset start, DateTimeOffset end,
-                List<ResolvedParticipant> attendees, bool online, CancellationToken _) =>
+                List<ResolvedParticipant> attendees, bool online, RecurrenceInfo? recurrence, CancellationToken _) =>
             {
                 var id = $"event-{EventsCreated.Count + 1:D3}";
                 EventsCreated.Add(id);
@@ -272,6 +292,7 @@ public sealed class MockServiceFactory
                     ConversationId = doc.ConversationId,
                     Intent = doc.Intent,
                     ResolvedParticipants = doc.ResolvedParticipants != null ? new List<ResolvedParticipant>(doc.ResolvedParticipants) : [],
+                    PendingDisambiguations = doc.PendingDisambiguations != null ? new List<DisambiguationItem>(doc.PendingDisambiguations) : null,
                     Status = doc.Status,
                     ProposedSlots = doc.ProposedSlots != null ? new List<ProposedTimeSlot>(doc.ProposedSlots) : [],
                     SelectedSlotIndex = doc.SelectedSlotIndex,
@@ -279,7 +300,9 @@ public sealed class MockServiceFactory
                     CreatedAt = doc.CreatedAt,
                     UpdatedAt = DateTimeOffset.UtcNow,
                     Ttl = doc.Ttl,
-                    ETag = Guid.NewGuid().ToString()
+                    ETag = Guid.NewGuid().ToString(),
+                    UsedScheduleFallback = doc.UsedScheduleFallback,
+                    DisambiguationRequired = doc.DisambiguationRequired
                 };
                 _requests[doc.RequestId] = copy;
                 RequestsUpdated.Add(copy);
@@ -319,6 +342,20 @@ public sealed class MockServiceFactory
             .Returns((AuditLogDocument doc, CancellationToken _) =>
             {
                 AuditLogs.Add(doc);
+                return Task.CompletedTask;
+            });
+
+        CosmosDb.Setup(c => c.SaveRequestSummaryAsync(It.IsAny<RequestSummaryDocument>(), It.IsAny<CancellationToken>()))
+            .Returns((RequestSummaryDocument doc, CancellationToken _) =>
+            {
+                RequestSummaries.Add(doc);
+                return Task.CompletedTask;
+            });
+
+        CosmosDb.Setup(c => c.SaveFeedbackAsync(It.IsAny<FeedbackDocument>(), It.IsAny<CancellationToken>()))
+            .Returns((FeedbackDocument doc, CancellationToken _) =>
+            {
+                Feedbacks.Add(doc);
                 return Task.CompletedTask;
             });
     }

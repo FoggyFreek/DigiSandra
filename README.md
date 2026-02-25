@@ -57,6 +57,8 @@ infra/                        # Bicep templates
 - **Smart Conflict Resolution**: AI-beslissingsmatrix voor conflictoplossing
 - **Autonome 1-op-1 Interactie**: Directe chat met deelnemers bij conflicten
 - **Adaptive Cards**: Rijke UI voor tijdslot selectie in Teams
+- **Request Lifecycle Summary**: Na elke boeking wordt een samenvatting opgeslagen (doorlooptijd, slotaantal, conflictcount, fallback-gebruik) — querybaar via Application Insights en Cosmos DB
+- **Gebruikersfeedback**: Na boeking ontvangt de aanvrager een beoordelingskaart (1–5 sterren + verbetersuggessie) die wordt opgeslagen voor continue verbetering
 - **Audit Trail**: Metadata-only logging via Cosmos DB
 - **AVG/GDPR Compliant**: TTL policies, geen opslag van meeting-inhoud
 
@@ -144,6 +146,38 @@ The bot will:
 4. Resolve any conflicts using AI reasoning
 5. Present options via an Adaptive Card
 6. Book the meeting upon selection
+7. Save a lifecycle summary (duration, slot count, conflict count, strategies used)
+8. Ask the requester to rate the experience and optionally suggest improvements
+
+## Monitoring & Observability
+
+After each completed request, a `RequestSummaryDocument` is written to Cosmos DB and emitted as a structured Application Insights log. Query with:
+
+```kusto
+traces
+| where message startswith "Request summary:"
+| project timestamp,
+    requestId     = tostring(customDimensions.RequestId),
+    outcome       = tostring(customDimensions.Outcome),
+    durationSec   = toint(customDimensions.DurationSeconds),
+    slotCount     = toint(customDimensions.SlotCount),
+    conflictCount = toint(customDimensions.ConflictCount),
+    usedFallback  = tobool(customDimensions.UsedFallback),
+    isRecurring   = tobool(customDimensions.IsRecurring)
+| order by timestamp desc
+```
+
+Feedback scores are stored as `FeedbackDocument` in Cosmos DB (same partition as the request) and can be aggregated per time period to track satisfaction trends.
+
+### Cosmos DB document types
+
+| Type | TTL | Purpose |
+|------|-----|---------|
+| `SchedulingRequest` | 7 days | Full request state and lifecycle |
+| `ConflictResolutionState` | 7 days | Per-user conflict negotiation state |
+| `AuditLog` | 7 days | Immutable action log (metadata only) |
+| `RequestSummary` | 90 days | Lifecycle summary for trend analysis |
+| `Feedback` | 90 days | Requester satisfaction scores and suggestions |
 
 ## TODO
 

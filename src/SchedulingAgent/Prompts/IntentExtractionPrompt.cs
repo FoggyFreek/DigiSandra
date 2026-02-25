@@ -12,10 +12,19 @@ public static class IntentExtractionPrompt
            - "volgende week" = maandag t/m vrijdag van de volgende werkweek
            - "morgen" = de volgende werkdag
            - "deze week" = resterende werkdagen van de huidige week
+           - "bij voorkeur op woensdag" → preferredDaysOfWeek: ["Wednesday"]
+           - preferredDaysOfWeek is optioneel; laat het weg als geen dag-voorkeur aanwezig
         4. participants: Lijst van deelnemers met naam en type (User of Group)
         5. priority: Low, Normal, High of Urgent (standaard Normal)
         6. isOnline: Of het een online vergadering moet zijn (standaard true)
-        7. notes: Eventuele aanvullende opmerkingen
+        7. room: Of het in een fysieke ruimte moet plaatsvinden (indien isOnline false)
+        8. notes: Eventuele aanvullende opmerkingen
+        9. recurrence: Herhaalpatroon als de gebruiker meerdere vergaderingen wil plannen.
+           - "3 wekelijkse vergaderingen" → count: 3, frequency: "Weekly", intervalWeeks: 1
+           - "tweewekelijks" → frequency: "BiWeekly", intervalWeeks: 2
+           - "maandelijks" → frequency: "Monthly"
+           - Als er geen herhaling is, laat recurrence dan weg (null).
+           - timeWindow moet het volledige bereik beslaan (startDate t/m de laatste vergadering).
 
         Gebruik de huidige datum als referentie. Geef altijd gestructureerde JSON output.
         Als informatie ontbreekt, gebruik redelijke standaardwaarden.
@@ -32,7 +41,11 @@ public static class IntentExtractionPrompt
               "properties": {
                 "startDate": { "type": "string", "format": "date-time" },
                 "endDate": { "type": "string", "format": "date-time" },
-                "preferredTimeOfDay": { "type": ["string", "null"], "enum": ["Morning", "Afternoon", "Evening", null] }
+                "preferredTimeOfDay": { "type": ["string", "null"], "enum": ["Morning", "Afternoon", "Evening", null] },
+                "preferredDaysOfWeek": {
+                  "type": ["array", "null"],
+                  "items": { "type": "string", "enum": ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"] }
+                }
               },
               "required": ["startDate", "endDate"]
             },
@@ -50,7 +63,17 @@ public static class IntentExtractionPrompt
             },
             "priority": { "type": "string", "enum": ["Low", "Normal", "High", "Urgent"] },
             "isOnline": { "type": "boolean" },
-            "notes": { "type": ["string", "null"] }
+            "room": { "type": ["string", "null"] },
+            "notes": { "type": ["string", "null"] },
+            "recurrence": {
+              "type": ["object", "null"],
+              "properties": {
+                "count": { "type": "integer", "minimum": 2 },
+                "frequency": { "type": "string", "enum": ["Weekly", "BiWeekly", "Monthly"] },
+                "intervalWeeks": { "type": "integer", "minimum": 1 }
+              },
+              "required": ["count", "frequency", "intervalWeeks"]
+            }
           },
           "required": ["subject", "durationMinutes", "timeWindow", "participants", "priority", "isOnline"]
         }

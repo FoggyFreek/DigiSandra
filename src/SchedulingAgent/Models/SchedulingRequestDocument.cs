@@ -32,6 +32,9 @@ public sealed class SchedulingRequestDocument
     [JsonPropertyName("resolvedParticipants")]
     public List<ResolvedParticipant> ResolvedParticipants { get; set; } = [];
 
+    [JsonPropertyName("pendingDisambiguations")]
+    public List<DisambiguationItem>? PendingDisambiguations { get; set; }
+
     [JsonPropertyName("proposedSlots")]
     public List<ProposedTimeSlot> ProposedSlots { get; set; } = [];
 
@@ -49,6 +52,14 @@ public sealed class SchedulingRequestDocument
 
     [JsonPropertyName("updatedAt")]
     public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.UtcNow;
+
+    /// <summary>Set to true when findMeetingTimes returns no results and getSchedule is used instead.</summary>
+    [JsonPropertyName("usedScheduleFallback")]
+    public bool UsedScheduleFallback { get; set; }
+
+    /// <summary>Set to true when the user was asked to disambiguate one or more participant names.</summary>
+    [JsonPropertyName("disambiguationRequired")]
+    public bool DisambiguationRequired { get; set; }
 
     [JsonPropertyName("ttl")]
     public int Ttl { get; set; } = 604800; // 7 days
@@ -126,6 +137,7 @@ public enum SchedulingStatus
     Received,
     ParsingIntent,
     ResolvingParticipants,
+    AwaitingDisambiguation,
     CheckingAvailability,
     ResolvingConflicts,
     PendingUserSelection,
@@ -141,4 +153,25 @@ public enum SlotConfidence
     Full,
     Conditional,
     Low
+}
+
+public sealed record DisambiguationItem
+{
+    [JsonPropertyName("requestedName")]
+    public required string RequestedName { get; init; }
+
+    [JsonPropertyName("candidates")]
+    public required IReadOnlyList<ResolvedParticipant> Candidates { get; init; }
+
+    [JsonPropertyName("isRequired")]
+    public required bool IsRequired { get; init; }
+}
+
+public sealed record ParticipantResolutionResult
+{
+    public required string RequestedName { get; init; }
+    public ResolvedParticipant? Resolved { get; init; }
+    public IReadOnlyList<ResolvedParticipant> Candidates { get; init; } = [];
+    public bool IsAmbiguous => Candidates.Count > 1;
+    public bool IsNotFound => Resolved is null && !IsAmbiguous;
 }

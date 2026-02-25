@@ -4,7 +4,7 @@ namespace SchedulingAgent.Services;
 
 public interface IGraphService
 {
-    Task<ResolvedParticipant?> ResolveUserAsync(string displayName, CancellationToken ct = default);
+    Task<ParticipantResolutionResult> ResolveUserAsync(string displayName, CancellationToken ct = default);
     Task<List<ResolvedParticipant>> ResolveGroupMembersAsync(string groupName, CancellationToken ct = default);
     Task<List<ProposedTimeSlot>> FindMeetingTimesAsync(
         List<ResolvedParticipant> participants,
@@ -23,6 +23,7 @@ public interface IGraphService
         DateTimeOffset end,
         List<ResolvedParticipant> attendees,
         bool isOnline,
+        RecurrenceInfo? recurrence = null,
         CancellationToken ct = default);
     Task<string> CreateChatAsync(string userId, CancellationToken ct = default);
     Task SendChatMessageAsync(string chatId, string message, CancellationToken ct = default);

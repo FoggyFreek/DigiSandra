@@ -25,8 +25,34 @@ public sealed record MeetingIntent
     [JsonPropertyName("isOnline")]
     public bool IsOnline { get; init; } = true;
 
+    [JsonPropertyName("room")]
+    public string? Room { get; init; }
+
     [JsonPropertyName("notes")]
     public string? Notes { get; init; }
+
+    [JsonPropertyName("recurrence")]
+    public RecurrenceInfo? Recurrence { get; init; }
+}
+
+public sealed record RecurrenceInfo
+{
+    [JsonPropertyName("count")]
+    public int Count { get; init; } = 1;
+
+    [JsonPropertyName("frequency")]
+    public RecurrenceFrequency Frequency { get; init; } = RecurrenceFrequency.Weekly;
+
+    [JsonPropertyName("intervalWeeks")]
+    public int IntervalWeeks { get; init; } = 1;
+}
+
+[JsonConverter(typeof(JsonStringEnumConverter))]
+public enum RecurrenceFrequency
+{
+    Weekly,
+    BiWeekly,
+    Monthly
 }
 
 public sealed record TimeWindow
@@ -39,6 +65,9 @@ public sealed record TimeWindow
 
     [JsonPropertyName("preferredTimeOfDay")]
     public TimeOfDayPreference? PreferredTimeOfDay { get; init; }
+
+    [JsonPropertyName("preferredDaysOfWeek")]
+    public IReadOnlyList<DayOfWeek>? PreferredDaysOfWeek { get; init; }
 }
 
 public sealed record ParticipantReference

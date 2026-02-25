@@ -12,4 +12,6 @@ public interface ICosmosDbService
     Task<ConflictResolutionStateDocument> UpdateConflictStateAsync(ConflictResolutionStateDocument state, CancellationToken ct = default);
     Task<List<ConflictResolutionStateDocument>> GetExpiredConflictsAsync(CancellationToken ct = default);
     Task CreateAuditLogAsync(AuditLogDocument auditLog, CancellationToken ct = default);
+    Task SaveRequestSummaryAsync(RequestSummaryDocument summary, CancellationToken ct = default);
+    Task SaveFeedbackAsync(FeedbackDocument feedback, CancellationToken ct = default);
 }

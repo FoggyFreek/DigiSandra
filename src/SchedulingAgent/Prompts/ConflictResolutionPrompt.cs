@@ -9,6 +9,7 @@ public static class ConflictResolutionPrompt
         BESLISSINGSMATRIX:
         - Informeel intern overleg → Probeer te verplaatsen (ProposeReschedule)
         - Externe meeting → Niet automatisch wijzigen (Escalate)
+        - Meeting met externe deelnemers → Niet automatisch wijzigingen (Escalate)
         - Focus Time → Respecteren (SuggestAlternativeSlot)
         - All-day event → Niet aanpassen (SuggestAlternativeSlot)
         - Terugkerend overleg met lage prioriteit → Vraag deelnemer (AskParticipant)

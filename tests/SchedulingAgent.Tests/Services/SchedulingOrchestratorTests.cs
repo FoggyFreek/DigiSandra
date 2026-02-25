@@ -49,11 +49,15 @@ public class SchedulingOrchestratorTests
             .ReturnsAsync(intent);
 
         _graphService.Setup(s => s.ResolveUserAsync("Jan", It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new ResolvedParticipant
+            .ReturnsAsync(new ParticipantResolutionResult
             {
-                UserId = "user-jan",
-                DisplayName = "Jan de Vries",
-                Email = "jan@contoso.com"
+                RequestedName = "Jan",
+                Resolved = new ResolvedParticipant
+                {
+                    UserId = "user-jan",
+                    DisplayName = "Jan de Vries",
+                    Email = "jan@contoso.com"
+                }
             });
 
         var proposedSlots = new List<ProposedTimeSlot>
@@ -117,7 +121,7 @@ public class SchedulingOrchestratorTests
             .ReturnsAsync(intent);
 
         _graphService.Setup(s => s.ResolveUserAsync("NietBestaand", It.IsAny<CancellationToken>()))
-            .ReturnsAsync((ResolvedParticipant?)null);
+            .ReturnsAsync(new ParticipantResolutionResult { RequestedName = "NietBestaand" });
 
         _cosmosDbService.Setup(s => s.CreateRequestAsync(It.IsAny<SchedulingRequestDocument>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync((SchedulingRequestDocument doc, CancellationToken _) => doc);
@@ -195,7 +199,7 @@ public class SchedulingOrchestratorTests
                 It.IsAny<string>(), It.IsAny<string>(),
                 It.IsAny<DateTimeOffset>(), It.IsAny<DateTimeOffset>(),
                 It.IsAny<List<ResolvedParticipant>>(), true,
-                It.IsAny<CancellationToken>()))
+                It.IsAny<RecurrenceInfo?>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync("event-456");
 
         // Act
@@ -205,6 +209,142 @@ public class SchedulingOrchestratorTests
         result.Status.Should().Be(SchedulingStatus.Completed);
         result.CreatedEventId.Should().Be("event-456");
         result.SelectedSlotIndex.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task FindAvailableSlots_WithPreferredDay_PreferredDaySlotsRankedFirst()
+    {
+        // Arrange: intent with Wednesday preference over a Mon-Sun window
+        // Use a fixed Monday to ensure deterministic DayOfWeek values
+        var monday = new DateTimeOffset(2026, 3, 2, 9, 0, 0, TimeSpan.Zero); // March 2 2026 = Monday
+        var intent = new MeetingIntent
+        {
+            Subject = "Voorkeur vergadering",
+            DurationMinutes = 60,
+            TimeWindow = new TimeWindow
+            {
+                StartDate = monday,
+                EndDate = monday.AddDays(7),
+                PreferredDaysOfWeek = [DayOfWeek.Wednesday]
+            },
+            Participants =
+            [
+                new ParticipantReference { Name = "Jan", Type = ParticipantType.User, IsRequired = true }
+            ]
+        };
+
+        _openAIService.Setup(s => s.ExtractMeetingIntentAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(intent);
+
+        _graphService.Setup(s => s.ResolveUserAsync("Jan", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ParticipantResolutionResult
+            {
+                RequestedName = "Jan",
+                Resolved = new ResolvedParticipant
+                {
+                    UserId = "user-jan",
+                    DisplayName = "Jan de Vries",
+                    Email = "jan@contoso.com"
+                }
+            });
+
+        // findMeetingTimes returns nothing → falls back to getSchedule
+        _graphService.Setup(s => s.FindMeetingTimesAsync(
+                It.IsAny<List<ResolvedParticipant>>(),
+                It.IsAny<TimeWindow>(),
+                It.IsAny<int>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync([]);
+
+        // Empty schedule → all slots are free
+        _graphService.Setup(s => s.GetScheduleAsync(
+                It.IsAny<List<string>>(),
+                It.IsAny<DateTimeOffset>(),
+                It.IsAny<DateTimeOffset>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync([]);
+
+        _cosmosDbService.Setup(s => s.CreateRequestAsync(It.IsAny<SchedulingRequestDocument>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((SchedulingRequestDocument doc, CancellationToken _) => doc);
+
+        _cosmosDbService.Setup(s => s.UpdateRequestAsync(It.IsAny<SchedulingRequestDocument>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((SchedulingRequestDocument doc, CancellationToken _) => doc);
+
+        _cosmosDbService.Setup(s => s.CreateAuditLogAsync(It.IsAny<AuditLogDocument>(), It.IsAny<CancellationToken>()))
+            .Returns(Task.CompletedTask);
+
+        // Act
+        var result = await _sut.ProcessSchedulingRequestAsync(
+            "user-requester", "Requester", "conv-123",
+            "Plan een vergadering met Jan volgende week, bij voorkeur op woensdag");
+
+        // Assert: all 3 proposed slots are on Wednesday
+        result.Status.Should().Be(SchedulingStatus.PendingUserSelection);
+        result.ProposedSlots.Should().HaveCount(3);
+        result.ProposedSlots.Should().AllSatisfy(s =>
+            s.Start.DayOfWeek.Should().Be(DayOfWeek.Wednesday));
+    }
+
+    [Fact]
+    public async Task ResolveAllParticipants_Ambiguous_ReturnsAwaitingDisambiguationStatus()
+    {
+        // Arrange
+        var intent = new MeetingIntent
+        {
+            Subject = "Bespreking",
+            DurationMinutes = 60,
+            TimeWindow = new TimeWindow
+            {
+                StartDate = DateTimeOffset.UtcNow.AddDays(1),
+                EndDate = DateTimeOffset.UtcNow.AddDays(5)
+            },
+            Participants =
+            [
+                new ParticipantReference { Name = "Jan", Type = ParticipantType.User, IsRequired = true }
+            ]
+        };
+
+        _openAIService.Setup(s => s.ExtractMeetingIntentAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(intent);
+
+        // Two candidates for "Jan" → ambiguous
+        _graphService.Setup(s => s.ResolveUserAsync("Jan", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ParticipantResolutionResult
+            {
+                RequestedName = "Jan",
+                Candidates =
+                [
+                    new ResolvedParticipant { UserId = "user-jan1", DisplayName = "Jan de Vries", Email = "jan.devries@contoso.com" },
+                    new ResolvedParticipant { UserId = "user-jan2", DisplayName = "Jan Pietersen", Email = "jan.pietersen@contoso.com" }
+                ]
+            });
+
+        _cosmosDbService.Setup(s => s.CreateRequestAsync(It.IsAny<SchedulingRequestDocument>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((SchedulingRequestDocument doc, CancellationToken _) => doc);
+
+        _cosmosDbService.Setup(s => s.UpdateRequestAsync(It.IsAny<SchedulingRequestDocument>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((SchedulingRequestDocument doc, CancellationToken _) => doc);
+
+        _cosmosDbService.Setup(s => s.CreateAuditLogAsync(It.IsAny<AuditLogDocument>(), It.IsAny<CancellationToken>()))
+            .Returns(Task.CompletedTask);
+
+        // Act
+        var result = await _sut.ProcessSchedulingRequestAsync(
+            "user-requester", "Requester", "conv-123",
+            "Plan een overleg met Jan");
+
+        // Assert
+        result.Status.Should().Be(SchedulingStatus.AwaitingDisambiguation);
+        result.PendingDisambiguations.Should().HaveCount(1);
+        result.PendingDisambiguations![0].RequestedName.Should().Be("Jan");
+        result.PendingDisambiguations![0].Candidates.Should().HaveCount(2);
+
+        // FindMeetingTimes should never have been called
+        _graphService.Verify(g => g.FindMeetingTimesAsync(
+            It.IsAny<List<ResolvedParticipant>>(),
+            It.IsAny<TimeWindow>(),
+            It.IsAny<int>(),
+            It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]

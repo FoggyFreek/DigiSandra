@@ -56,12 +56,12 @@ public sealed class SchedulingOrchestrator(
         request.Status = SchedulingStatus.ResolvingParticipants;
         request = await cosmosDbService.UpdateRequestAsync(request, ct);
 
-        var resolvedParticipants = await ResolveAllParticipantsAsync(intent.Participants, ct);
+        var (resolvedList, ambiguousList) = await ResolveAllParticipantsAsync(intent.Participants, ct);
 
         // Add the requester as first participant if not already included
-        if (resolvedParticipants.All(p => p.UserId != requesterId))
+        if (resolvedList.All(p => p.UserId != requesterId))
         {
-            resolvedParticipants.Insert(0, new ResolvedParticipant
+            resolvedList.Insert(0, new ResolvedParticipant
             {
                 UserId = requesterId,
                 DisplayName = requesterName,
@@ -70,54 +70,72 @@ public sealed class SchedulingOrchestrator(
             });
         }
 
-        request.ResolvedParticipants = resolvedParticipants;
+        // Early exit: disambiguation required before proceeding
+        if (ambiguousList.Count > 0)
+        {
+            request.PendingDisambiguations = ambiguousList;
+            request.ResolvedParticipants = resolvedList;
+            request.Status = SchedulingStatus.AwaitingDisambiguation;
+            request.DisambiguationRequired = true;
+            return await cosmosDbService.UpdateRequestAsync(request, ct);
+        }
 
-        if (resolvedParticipants.Count < 2)
+        request.ResolvedParticipants = resolvedList;
+
+        if (resolvedList.Count < 2)
         {
             logger.LogWarning("Could not resolve enough participants for request {RequestId}", requestId);
             request.Status = SchedulingStatus.Failed;
             return await cosmosDbService.UpdateRequestAsync(request, ct);
         }
 
-        // Step 3: Check availability via Graph
-        request.Status = SchedulingStatus.CheckingAvailability;
-        request = await cosmosDbService.UpdateRequestAsync(request, ct);
+        return await ResumeFromCheckingAvailabilityAsync(request, resolvedList, ct);
+    }
 
-        var proposedSlots = await graphService.FindMeetingTimesAsync(
-            resolvedParticipants, intent.TimeWindow, intent.DurationMinutes, ct);
+    public async Task<SchedulingRequestDocument> HandleDisambiguationResponseAsync(
+        string requestId,
+        Dictionary<string, string> selections,
+        CancellationToken ct = default)
+    {
+        logger.LogInformation("Handling disambiguation response for request {RequestId}", requestId);
 
-        // Fallback to getSchedule if findMeetingTimes returns no results
-        if (proposedSlots.Count == 0)
+        var request = await cosmosDbService.GetRequestAsync(requestId, ct)
+            ?? throw new InvalidOperationException($"Request {requestId} not found");
+
+        if (request.Status != SchedulingStatus.AwaitingDisambiguation)
         {
-            logger.LogInformation("Using getSchedule fallback for request {RequestId}", requestId);
-            var scheduleItems = await graphService.GetScheduleAsync(
-                resolvedParticipants.Select(p => p.Email).ToList(),
-                intent.TimeWindow.StartDate,
-                intent.TimeWindow.EndDate,
-                ct);
-
-            proposedSlots = FindAvailableSlots(scheduleItems, intent.TimeWindow, intent.DurationMinutes);
+            throw new InvalidOperationException(
+                $"Request {requestId} is in status {request.Status}, expected AwaitingDisambiguation");
         }
 
-        // Step 4: Analyze and resolve conflicts
-        if (proposedSlots.Any(s => s.Conflicts.Count > 0))
+        var selectedParticipants = new List<ResolvedParticipant>();
+        foreach (var disambiguation in request.PendingDisambiguations ?? [])
         {
-            request.Status = SchedulingStatus.ResolvingConflicts;
-            request = await cosmosDbService.UpdateRequestAsync(request, ct);
-
-            proposedSlots = await conflictService.ResolveConflictsAsync(request, proposedSlots, ct);
+            if (selections.TryGetValue(disambiguation.RequestedName, out var userId))
+            {
+                var candidate = disambiguation.Candidates.FirstOrDefault(c => c.UserId == userId);
+                if (candidate is not null)
+                    selectedParticipants.Add(candidate with { IsRequired = disambiguation.IsRequired });
+            }
         }
 
-        // Step 5: Present options to user
-        request.ProposedSlots = proposedSlots.Take(3).ToList();
-        request.Status = SchedulingStatus.PendingUserSelection;
-        request = await cosmosDbService.UpdateRequestAsync(request, ct);
+        var allParticipants = (request.ResolvedParticipants ?? [])
+            .Concat(selectedParticipants)
+            .GroupBy(p => p.UserId)
+            .Select(g => g.First())
+            .ToList();
 
-        logger.LogInformation(
-            "Request {RequestId} ready for user selection with {Count} proposed slots",
-            requestId, request.ProposedSlots.Count);
+        request.PendingDisambiguations = null;
 
-        return request;
+        if (allParticipants.Count < 2)
+        {
+            logger.LogWarning("Not enough participants after disambiguation for request {RequestId}", requestId);
+            request.ResolvedParticipants = allParticipants;
+            request.Status = SchedulingStatus.Failed;
+            return await cosmosDbService.UpdateRequestAsync(request, ct);
+        }
+
+        return await ResumeFromCheckingAvailabilityAsync(request, allParticipants, ct);
     }
 
     public async Task<SchedulingRequestDocument> HandleSlotSelectionAsync(
@@ -157,6 +175,7 @@ public sealed class SchedulingOrchestrator(
             selectedSlot.End,
             request.ResolvedParticipants,
             request.Intent.IsOnline,
+            request.Intent.Recurrence,
             ct);
 
         request.CreatedEventId = eventId;
@@ -179,13 +198,133 @@ public sealed class SchedulingOrchestrator(
         }, ct);
 
         logger.LogInformation("Meeting booked for request {RequestId}, event {EventId}", requestId, eventId);
+
+        await SaveRequestSummaryAsync(request, ct);
+
         return request;
     }
 
-    private async Task<List<ResolvedParticipant>> ResolveAllParticipantsAsync(
-        List<ParticipantReference> participants, CancellationToken ct)
+    public async Task HandleFeedbackAsync(
+        string requestId,
+        string requesterId,
+        int score,
+        string? improvementSuggestion,
+        CancellationToken ct = default)
+    {
+        logger.LogInformation(
+            "Feedback received for request {RequestId}: score={Score}, hasSuggestion={HasSuggestion}",
+            requestId, score, improvementSuggestion is not null);
+
+        var feedback = new FeedbackDocument
+        {
+            Id = Guid.NewGuid().ToString(),
+            RequestId = requestId,
+            RequesterId = requesterId,
+            Score = score,
+            ImprovementSuggestion = improvementSuggestion
+        };
+
+        await cosmosDbService.SaveFeedbackAsync(feedback, ct);
+
+        await cosmosDbService.CreateAuditLogAsync(new AuditLogDocument
+        {
+            Id = Guid.NewGuid().ToString(),
+            RequestId = requestId,
+            Action = "FeedbackReceived",
+            ActorId = requesterId,
+            ActorType = ActorType.User,
+            Details = new Dictionary<string, string>
+            {
+                ["score"] = score.ToString(),
+                ["hasSuggestion"] = (improvementSuggestion is not null).ToString()
+            }
+        }, ct);
+    }
+
+    private async Task SaveRequestSummaryAsync(SchedulingRequestDocument request, CancellationToken ct)
+    {
+        var durationSeconds = (int)(DateTimeOffset.UtcNow - request.CreatedAt).TotalSeconds;
+        var conflictCount = request.ProposedSlots.Sum(s => s.Conflicts.Count);
+
+        var summary = new RequestSummaryDocument
+        {
+            Id = $"{request.RequestId}-summary",
+            RequestId = request.RequestId,
+            RequesterId = request.RequesterId,
+            RequesterName = request.RequesterName,
+            Outcome = request.Status,
+            DurationSeconds = durationSeconds,
+            SlotCount = request.ProposedSlots.Count,
+            ConflictCount = conflictCount,
+            UsedScheduleFallback = request.UsedScheduleFallback,
+            DisambiguationRequired = request.DisambiguationRequired,
+            ParticipantCount = request.ResolvedParticipants.Count,
+            IsRecurring = request.Intent.Recurrence is not null
+        };
+
+        await cosmosDbService.SaveRequestSummaryAsync(summary, ct);
+
+        logger.LogInformation(
+            "Request summary: RequestId={RequestId} Outcome={Outcome} DurationSeconds={DurationSeconds} " +
+            "SlotCount={SlotCount} ConflictCount={ConflictCount} ParticipantCount={ParticipantCount} " +
+            "UsedFallback={UsedFallback} DisambiguationRequired={DisambiguationRequired} IsRecurring={IsRecurring}",
+            summary.RequestId, summary.Outcome, summary.DurationSeconds,
+            summary.SlotCount, summary.ConflictCount, summary.ParticipantCount,
+            summary.UsedScheduleFallback, summary.DisambiguationRequired, summary.IsRecurring);
+    }
+
+    private async Task<SchedulingRequestDocument> ResumeFromCheckingAvailabilityAsync(
+        SchedulingRequestDocument request,
+        List<ResolvedParticipant> participants,
+        CancellationToken ct)
+    {
+        request.ResolvedParticipants = participants;
+        request.Status = SchedulingStatus.CheckingAvailability;
+        request = await cosmosDbService.UpdateRequestAsync(request, ct);
+
+        var proposedSlots = await graphService.FindMeetingTimesAsync(
+            participants, request.Intent.TimeWindow, request.Intent.DurationMinutes, ct);
+
+        // Fallback to getSchedule if findMeetingTimes returns no results
+        if (proposedSlots.Count == 0)
+        {
+            logger.LogInformation("Using getSchedule fallback for request {RequestId}", request.RequestId);
+            request.UsedScheduleFallback = true;
+            var scheduleItems = await graphService.GetScheduleAsync(
+                participants.Select(p => p.Email).ToList(),
+                request.Intent.TimeWindow.StartDate,
+                request.Intent.TimeWindow.EndDate,
+                ct);
+
+            proposedSlots = FindAvailableSlots(scheduleItems, request.Intent.TimeWindow, request.Intent.DurationMinutes);
+        }
+
+        // Analyze and resolve conflicts
+        if (proposedSlots.Any(s => s.Conflicts.Count > 0))
+        {
+            request.Status = SchedulingStatus.ResolvingConflicts;
+            request = await cosmosDbService.UpdateRequestAsync(request, ct);
+
+            proposedSlots = await conflictService.ResolveConflictsAsync(request, proposedSlots, ct);
+        }
+
+        // Present options to user
+        request.ProposedSlots = proposedSlots.Take(3).ToList();
+        request.Status = SchedulingStatus.PendingUserSelection;
+        request = await cosmosDbService.UpdateRequestAsync(request, ct);
+
+        logger.LogInformation(
+            "Request {RequestId} ready for user selection with {Count} proposed slots",
+            request.RequestId, request.ProposedSlots.Count);
+
+        return request;
+    }
+
+    private async Task<(List<ResolvedParticipant> Resolved, List<DisambiguationItem> Ambiguous)>
+        ResolveAllParticipantsAsync(List<ParticipantReference> participants, CancellationToken ct)
     {
         var resolved = new List<ResolvedParticipant>();
+        var ambiguous = new List<DisambiguationItem>();
         var unresolvedNames = new List<string>();
 
         foreach (var participant in participants)
@@ -193,10 +332,19 @@ public sealed class SchedulingOrchestrator(
             switch (participant.Type)
             {
                 case ParticipantType.User:
-                    var user = await graphService.ResolveUserAsync(participant.Name, ct);
-                    if (user is not null)
+                    var result = await graphService.ResolveUserAsync(participant.Name, ct);
+                    if (result.IsAmbiguous)
                     {
-                        resolved.Add(user with { IsRequired = participant.IsRequired });
+                        ambiguous.Add(new DisambiguationItem
+                        {
+                            RequestedName = result.RequestedName,
+                            Candidates = result.Candidates,
+                            IsRequired = participant.IsRequired
+                        });
+                    }
+                    else if (result.Resolved is not null)
+                    {
+                        resolved.Add(result.Resolved with { IsRequired = participant.IsRequired });
                     }
                     else
                     {
@@ -224,11 +372,7 @@ public sealed class SchedulingOrchestrator(
             logger.LogWarning("Could not resolve participants: {Names}", string.Join(", ", unresolvedNames));
         }
 
-        // Deduplicate by UserId
-        return resolved
-            .GroupBy(p => p.UserId)
-            .Select(g => g.First())
-            .ToList();
+        return (resolved.GroupBy(p => p.UserId).Select(g => g.First()).ToList(), ambiguous);
     }
 
     private static List<ProposedTimeSlot> FindAvailableSlots(
@@ -243,7 +387,7 @@ public sealed class SchedulingOrchestrator(
         var current = timeWindow.StartDate.Date.AddHours(9);
         var endDate = timeWindow.EndDate;
 
-        while (current.Add(duration) <= endDate && slots.Count < 3)
+        while (current.Add(duration) <= endDate && slots.Count < 50)
         {
             // Skip weekends
             if (current.DayOfWeek is DayOfWeek.Saturday or DayOfWeek.Sunday)
@@ -291,6 +435,16 @@ public sealed class SchedulingOrchestrator(
             current = current.AddMinutes(30);
         }
 
+        slots = ApplyDayOfWeekBoost(slots, timeWindow.PreferredDaysOfWeek);
         return slots.OrderByDescending(s => s.AvailabilityScore).Take(3).ToList();
+    }
+
+    private static List<ProposedTimeSlot> ApplyDayOfWeekBoost(
+        List<ProposedTimeSlot> slots, IReadOnlyList<DayOfWeek>? preferredDays)
+    {
+        if (preferredDays is null || preferredDays.Count == 0) return slots;
+        return slots.Select(s => preferredDays.Contains(s.Start.DayOfWeek)
+            ? s with { AvailabilityScore = s.AvailabilityScore + 0.4 }
+            : s).ToList();
     }
 }
