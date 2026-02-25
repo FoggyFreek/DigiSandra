@@ -1,0 +1,176 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Target environment'
+        required: true
+        type: choice
+        options:
+          - dev
+          - acc
+          - prod
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AZURE_FUNCTIONAPP_PACKAGE_PATH: 'src/SchedulingAgent'
+  DOTNET_VERSION: '8.0.x'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Restore
+        run: dotnet restore
+
+      - name: Build
+        run: dotnet build --configuration Release --no-restore
+
+      - name: Test
+        run: dotnet test --configuration Release --no-build
+
+      - name: Publish
+        run: dotnet publish ${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }} --configuration Release --output ./publish
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: function-app
+          path: ./publish
+
+  deploy-dev:
+    if: github.event.inputs.environment == 'dev' || github.event.inputs.environment == ''
+    needs: build
+    runs-on: ubuntu-latest
+    environment: dev
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: function-app
+          path: ./publish
+
+      - name: Login to Azure
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Deploy Infrastructure
+        uses: azure/arm-deploy@v2
+        with:
+          resourceGroupName: ${{ secrets.AZURE_RESOURCE_GROUP }}
+          template: infra/main.bicep
+          parameters: >
+            environment=dev
+            botAppId=${{ secrets.BOT_APP_ID }}
+            botAppPassword=${{ secrets.BOT_APP_PASSWORD }}
+            graphClientId=${{ secrets.GRAPH_CLIENT_ID }}
+            graphClientSecret=${{ secrets.GRAPH_CLIENT_SECRET }}
+            graphTenantId=${{ secrets.AZURE_TENANT_ID }}
+
+      - name: Deploy Function App
+        uses: Azure/functions-action@v1
+        with:
+          app-name: func-digisandra-dev
+          package: ./publish
+
+  deploy-acc:
+    if: github.event.inputs.environment == 'acc'
+    needs: build
+    runs-on: ubuntu-latest
+    environment: acc
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: function-app
+          path: ./publish
+
+      - name: Login to Azure
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Deploy Infrastructure
+        uses: azure/arm-deploy@v2
+        with:
+          resourceGroupName: ${{ secrets.AZURE_RESOURCE_GROUP }}
+          template: infra/main.bicep
+          parameters: >
+            environment=acc
+            botAppId=${{ secrets.BOT_APP_ID }}
+            botAppPassword=${{ secrets.BOT_APP_PASSWORD }}
+            graphClientId=${{ secrets.GRAPH_CLIENT_ID }}
+            graphClientSecret=${{ secrets.GRAPH_CLIENT_SECRET }}
+            graphTenantId=${{ secrets.AZURE_TENANT_ID }}
+
+      - name: Deploy Function App
+        uses: Azure/functions-action@v1
+        with:
+          app-name: func-digisandra-acc
+          package: ./publish
+
+  deploy-prod:
+    if: github.event.inputs.environment == 'prod'
+    needs: build
+    runs-on: ubuntu-latest
+    environment: prod
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: function-app
+          path: ./publish
+
+      - name: Login to Azure
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Deploy Infrastructure
+        uses: azure/arm-deploy@v2
+        with:
+          resourceGroupName: ${{ secrets.AZURE_RESOURCE_GROUP }}
+          template: infra/main.bicep
+          parameters: >
+            environment=prod
+            botAppId=${{ secrets.BOT_APP_ID }}
+            botAppPassword=${{ secrets.BOT_APP_PASSWORD }}
+            graphClientId=${{ secrets.GRAPH_CLIENT_ID }}
+            graphClientSecret=${{ secrets.GRAPH_CLIENT_SECRET }}
+            graphTenantId=${{ secrets.AZURE_TENANT_ID }}
+
+      - name: Deploy Function App
+        uses: Azure/functions-action@v1
+        with:
+          app-name: func-digisandra-prod
+          package: ./publish
