@@ -4,6 +4,7 @@ using Microsoft.Extensions.Options;
 using Moq;
 using SchedulingAgent.Models;
 using SchedulingAgent.Services;
+using Xunit;
 
 namespace SchedulingAgent.Tests.Integration;
 

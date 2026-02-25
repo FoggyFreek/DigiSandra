@@ -145,6 +145,10 @@ The bot will:
 5. Present options via an Adaptive Card
 6. Book the meeting upon selection
 
+## TODO
+
+- **Recurrence data in `getSchedule` fallback**: `GraphService.GetScheduleAsync` currently sets `IsRecurring = false` for all items because the `getSchedule` endpoint does not expose recurrence info. To fix this, enrich the fallback path with a secondary `CalendarView` call per user and check `Event.Recurrence is not null`. This improves AI conflict reasoning accuracy for recurring meetings (e.g. standups vs. one-off reviews). Note the trade-off: extra Graph calls per user in an already-fallback code path.
+
 ## License
 
 Proprietary – Internal use only.

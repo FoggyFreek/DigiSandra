@@ -151,7 +151,7 @@ public sealed class GraphService(
                 Start = DateTimeOffset.Parse(s.MeetingTimeSlot!.Start!.DateTime!),
                 End = DateTimeOffset.Parse(s.MeetingTimeSlot!.End!.DateTime!),
                 Confidence = MapConfidence(s.Confidence),
-                AvailabilityScore = s.Confidence == FreeBusyStatus.Free ? 1.0 : 0.5
+                AvailabilityScore = s.Confidence.HasValue ? s.Confidence.Value / 100.0 : 0.5
             }).ToList();
         }
         catch (ServiceException ex)
@@ -209,7 +209,7 @@ public sealed class GraphService(
                         End = DateTimeOffset.Parse(item.End!.DateTime!),
                         Status = item.Status?.ToString() ?? "unknown",
                         Subject = item.Subject,
-                        IsRecurring = item.IsRecurring ?? false
+                        IsRecurring = false // getSchedule does not expose recurrence; full Event data would be needed
                     });
                 }
             }
@@ -326,10 +326,10 @@ public sealed class GraphService(
         }
     }
 
-    private static SlotConfidence MapConfidence(FreeBusyStatus? status) => status switch
+    private static SlotConfidence MapConfidence(double? confidence) => confidence switch
     {
-        FreeBusyStatus.Free => SlotConfidence.Full,
-        FreeBusyStatus.Tentative => SlotConfidence.Conditional,
+        >= 80 => SlotConfidence.Full,
+        >= 50 => SlotConfidence.Conditional,
         _ => SlotConfidence.Low
     };
 

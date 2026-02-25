@@ -79,7 +79,8 @@ public sealed class SchedulingBot(
     private async Task HandleCardActionAsync(ITurnContext<IMessageActivity> turnContext, CancellationToken ct)
     {
         var valueJson = JsonSerializer.Serialize(turnContext.Activity.Value);
-        var action = JsonSerializer.Deserialize<CardAction>(valueJson);
+        var options = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
+        var action = JsonSerializer.Deserialize<CardAction>(valueJson, options);
 
         if (action is null)
         {

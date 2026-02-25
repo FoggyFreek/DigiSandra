@@ -3,6 +3,7 @@ using Microsoft.Extensions.Logging;
 using Moq;
 using SchedulingAgent.Models;
 using SchedulingAgent.Services;
+using Xunit;
 
 namespace SchedulingAgent.Tests.Services;
 

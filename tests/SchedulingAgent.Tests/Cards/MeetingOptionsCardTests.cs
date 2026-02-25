@@ -1,6 +1,7 @@
 using FluentAssertions;
 using SchedulingAgent.Cards;
 using SchedulingAgent.Models;
+using Xunit;
 
 namespace SchedulingAgent.Tests.Cards;
 

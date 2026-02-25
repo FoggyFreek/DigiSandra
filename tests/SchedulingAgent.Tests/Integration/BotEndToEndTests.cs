@@ -8,6 +8,7 @@ using Microsoft.Bot.Schema;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Moq;
+using Xunit;
 using SchedulingAgent.Bot;
 using SchedulingAgent.Cards;
 using SchedulingAgent.Models;
@@ -91,7 +92,7 @@ public sealed class BotEndToEndTests
         _mocks.SetupCreateEvent();
 
         // ── Act 1: Sophie sends a natural language message ──
-        var adapter = new TestAdapter(Channels.Msteams);
+        var adapter = new Microsoft.Bot.Builder.Adapters.TestAdapter(Channels.Msteams);
         var activities = new List<IActivity>();
 
         await adapter.ProcessActivityAsync(
@@ -124,7 +125,8 @@ public sealed class BotEndToEndTests
         var attachment = ((Activity)cardActivity!).Attachments![0];
         attachment.ContentType.Should().Be(AdaptiveCard.ContentType);
 
-        var cardJson = JsonSerializer.Serialize(attachment.Content);
+        var card = (AdaptiveCard)attachment.Content!;
+        var cardJson = card.ToJson();
         cardJson.Should().Contain("1-op-1 met Jan", "card should contain the meeting subject");
         cardJson.Should().Contain("30 minuten", "card should show the duration");
 
@@ -160,7 +162,8 @@ public sealed class BotEndToEndTests
             ((Activity)a).Attachments?.Any(att => att.ContentType == AdaptiveCard.ContentType) == true);
         confirmActivity.Should().NotBeNull("bot should send a confirmation Adaptive Card");
 
-        var confirmJson = JsonSerializer.Serialize(((Activity)confirmActivity!).Attachments![0].Content);
+        var confirmCard = (AdaptiveCard)((Activity)confirmActivity!).Attachments![0].Content!;
+        var confirmJson = confirmCard.ToJson();
         confirmJson.Should().Contain("gepland", "confirmation card should indicate success");
 
         // Verify: Event was created
@@ -273,7 +276,7 @@ public sealed class BotEndToEndTests
         _mocks.SetupCreateEvent();
 
         // ── Act ──
-        var adapter = new TestAdapter(Channels.Msteams);
+        var adapter = new Microsoft.Bot.Builder.Adapters.TestAdapter(Channels.Msteams);
         var activities = new List<IActivity>();
 
         await adapter.ProcessActivityAsync(
@@ -298,7 +301,8 @@ public sealed class BotEndToEndTests
             ((Activity)a).Attachments?.Any(att => att.ContentType == AdaptiveCard.ContentType) == true);
         cardActivity.Should().NotBeNull();
 
-        var cardJson = JsonSerializer.Serialize(((Activity)cardActivity!).Attachments![0].Content);
+        var card = (AdaptiveCard)((Activity)cardActivity!).Attachments![0].Content!;
+        var cardJson = card.ToJson();
 
         // Verify card content
         cardJson.Should().Contain("Productlancering review");
@@ -349,7 +353,7 @@ public sealed class BotEndToEndTests
     [Fact]
     public async Task FullE2E_UserCancels_ReceivesCancellationMessage()
     {
-        var adapter = new TestAdapter(Channels.Msteams);
+        var adapter = new Microsoft.Bot.Builder.Adapters.TestAdapter(Channels.Msteams);
         var activities = new List<IActivity>();
 
         await adapter.ProcessActivityAsync(
@@ -380,7 +384,7 @@ public sealed class BotEndToEndTests
     [Fact]
     public async Task FullE2E_EmptyMessage_ReturnsHelpPrompt()
     {
-        var adapter = new TestAdapter(Channels.Msteams);
+        var adapter = new Microsoft.Bot.Builder.Adapters.TestAdapter(Channels.Msteams);
         var activities = new List<IActivity>();
 
         await adapter.ProcessActivityAsync(
@@ -427,7 +431,7 @@ public sealed class BotEndToEndTests
             ExpirationTime = DateTimeOffset.UtcNow.AddHours(3)
         });
 
-        var adapter = new TestAdapter(Channels.Msteams);
+        var adapter = new Microsoft.Bot.Builder.Adapters.TestAdapter(Channels.Msteams);
         var activities = new List<IActivity>();
 
         await adapter.ProcessActivityAsync(
@@ -475,7 +479,7 @@ public sealed class BotEndToEndTests
     [Fact]
     public async Task FullE2E_NewMemberAdded_WelcomeMessageSent()
     {
-        var adapter = new TestAdapter(Channels.Msteams);
+        var adapter = new Microsoft.Bot.Builder.Adapters.TestAdapter(Channels.Msteams);
         var activities = new List<IActivity>();
 
         var conversationUpdate = new Activity

@@ -47,6 +47,27 @@ public sealed class MockServiceFactory
         SetupUserResolution();
         SetupGroupResolution();
         SetupCosmosDbCrud();
+        SetupDefaultConflictAnalysis();
+    }
+
+    // ──────────────────────────────────────────────
+    // OpenAI: Default conflict analysis
+    // ──────────────────────────────────────────────
+
+    private void SetupDefaultConflictAnalysis()
+    {
+        OpenAI.Setup(o => o.AnalyzeConflictAsync(It.IsAny<SlotConflict>(), It.IsAny<MeetingPriority>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((SlotConflict conflict, MeetingPriority priority, CancellationToken _) =>
+            {
+                ConflictAnalyses.Add((conflict, priority));
+                // Default: escalate the conflict (don't try to auto-resolve)
+                return new ConflictAnalysis
+                {
+                    CanAutoResolve = false,
+                    Strategy = ConflictStrategy.Escalate,
+                    Reasoning = "Standaard escalatie"
+                };
+            });
     }
 
     // ──────────────────────────────────────────────
@@ -241,11 +262,28 @@ public sealed class MockServiceFactory
         CosmosDb.Setup(c => c.UpdateRequestAsync(It.IsAny<SchedulingRequestDocument>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync((SchedulingRequestDocument doc, CancellationToken _) =>
             {
-                doc.ETag = Guid.NewGuid().ToString();
-                doc.UpdatedAt = DateTimeOffset.UtcNow;
-                _requests[doc.RequestId] = doc;
-                RequestsUpdated.Add(doc);
-                return doc;
+                // Create a copy to avoid all RequestsUpdated items pointing to the same object
+                var copy = new SchedulingRequestDocument
+                {
+                    Id = doc.Id,
+                    RequestId = doc.RequestId,
+                    RequesterId = doc.RequesterId,
+                    RequesterName = doc.RequesterName,
+                    ConversationId = doc.ConversationId,
+                    Intent = doc.Intent,
+                    ResolvedParticipants = doc.ResolvedParticipants != null ? new List<ResolvedParticipant>(doc.ResolvedParticipants) : [],
+                    Status = doc.Status,
+                    ProposedSlots = doc.ProposedSlots != null ? new List<ProposedTimeSlot>(doc.ProposedSlots) : [],
+                    SelectedSlotIndex = doc.SelectedSlotIndex,
+                    CreatedEventId = doc.CreatedEventId,
+                    CreatedAt = doc.CreatedAt,
+                    UpdatedAt = DateTimeOffset.UtcNow,
+                    Ttl = doc.Ttl,
+                    ETag = Guid.NewGuid().ToString()
+                };
+                _requests[doc.RequestId] = copy;
+                RequestsUpdated.Add(copy);
+                return copy;
             });
 
         CosmosDb.Setup(c => c.CreateConflictStateAsync(It.IsAny<ConflictResolutionStateDocument>(), It.IsAny<CancellationToken>()))
